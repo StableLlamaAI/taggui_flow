@@ -13,6 +13,12 @@ from auto_captioning.models.phi_3_vision import Phi3Vision
 from auto_captioning.models.wd_tagger import WdTagger
 from auto_captioning.models.remote import RemoteGen
 try:
+    from auto_captioning.models.openai_model import OpenAIModel
+    has_openai = True
+except ImportError:
+    has_openai = False
+    print("OpenAI package not installed. Install with: pip install openai")
+try:
     from auto_captioning.models.xcomposer2 import Xcomposer2, Xcomposer2_4khd
     hasgptqmodel = True
 except:
@@ -20,6 +26,7 @@ except:
     print("GPTQModel failed to install")
 
 MODELS = [
+    'OpenAI compatible API',
     'fancyfeast/llama-joycaption-beta-one-hf-llava',
     'THUDM/cogvlm-chat-hf',
     'THUDM/cogvlm2-llama3-chat-19B-int4',
@@ -108,6 +115,12 @@ def get_model_class(model_id: str) -> type[AutoCaptioningModel]:
             if '4khd' in lowercase_model_id:
                 return Xcomposer2_4khd
             return Xcomposer2
+    if 'openai' in lowercase_model_id:
+        if has_openai:
+            return OpenAIModel
+        else:
+            print("OpenAI package not installed. Falling back to default model.")
+            return AutoCaptioningModel
     if 'remote' in lowercase_model_id:
         return RemoteGen
     return AutoCaptioningModel

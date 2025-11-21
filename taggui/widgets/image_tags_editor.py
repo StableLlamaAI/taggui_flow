@@ -68,14 +68,6 @@ class TagInputBox(QLineEdit):
         tags = tag.split(self.tag_separator)
         selected_image_indices = self.image_list.get_selected_image_indices()
         selected_image_count = len(selected_image_indices)
-        if len(tags) == 1 and selected_image_count == 1:
-            # Add an empty tag and set it to the new tag.
-            self.image_tag_list_model.insertRow(
-                self.image_tag_list_model.rowCount())
-            new_tag_index = self.image_tag_list_model.index(
-                self.image_tag_list_model.rowCount() - 1)
-            self.image_tag_list_model.setData(new_tag_index, tag)
-            return
         if selected_image_count > 1:
             if len(tags) > 1:
                 question = (f'Add tags to {selected_image_count} selected '

@@ -52,7 +52,16 @@ class CaptioningThread(ModelThread):
 
     def load_model(self):
         model_id = self.caption_settings['model_id']
-        model_class = get_model_class(model_id)
+        # Prefer explicit API settings over local model loading
+        if self.caption_settings.get('is_openai', False):
+            from auto_captioning.models.openai_model import OpenAIModel
+            model_class = OpenAIModel
+        elif self.caption_settings.get('api_url', '').strip():
+            # Use the generic remote API model if an API URL is provided
+            from auto_captioning.models.remote import RemoteGen
+            model_class = RemoteGen
+        else:
+            model_class = get_model_class(model_id)
         self.model = model_class(
             captioning_thread_=self, caption_settings=self.caption_settings)
         self.error_message = self.model.get_error_message()

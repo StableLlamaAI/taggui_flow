@@ -67,11 +67,17 @@ class CaptionSettingsForm(QVBoxLayout):
         self.model_combo_box.setEditable(True)
         self.model_combo_box.addItems(self.get_local_model_paths())
         self.model_combo_box.addItems(MODELS)
-        
+
         #remote only:
         self.remote_address_line_edit = SettingsLineEdit(key='remote_address', default='http://localhost:5000')
         self.api_key_line_edit = SettingsLineEdit(key='api_key', default='')
 
+        # Create OpenAI model selector (will be hidden by default)
+        from PySide6.QtWidgets import QComboBox
+        self.openai_model_combo_box = QComboBox()
+        self.openai_model_combo_box.addItem('Loading models...')
+        self.openai_model_combo_box.setEnabled(False)
+        self.openai_model_combo_box.setVisible(False)  # Hidden by default
 
         self.prompt_text_edit = SettingsPlainTextEdit(key='prompt')
         set_text_edit_height(self.prompt_text_edit, 4)
@@ -124,6 +130,12 @@ class CaptionSettingsForm(QVBoxLayout):
         basic_settings_form.addRow('Model', self.model_combo_box)
         basic_settings_form.addRow('OAI Compatible Endpoint', self.remote_address_line_edit)
         basic_settings_form.addRow('API Key', self.api_key_line_edit)
+        basic_settings_form.addRow('OpenAI Model', self.openai_model_combo_box)
+
+        # Connect signals to fetch models when API settings change
+        self.remote_address_line_edit.textChanged.connect(self.fetch_openai_models)
+        self.api_key_line_edit.textChanged.connect(self.fetch_openai_models)
+
         self.prompt_label = QLabel('Prompt')
         basic_settings_form.addRow(self.prompt_label, self.prompt_text_edit)
         self.caption_start_label = QLabel('Start caption with')
@@ -250,8 +262,11 @@ class CaptionSettingsForm(QVBoxLayout):
         self.addWidget(self.advanced_settings_form_container)
         self.addStretch()
 
+        # Wire handlers
         self.model_combo_box.currentTextChanged.connect(
             self.show_settings_for_model)
+        # Update visibility dynamically whenever model changes
+        self.model_combo_box.currentTextChanged.connect(self.update_visibility_for_model)
         self.device_combo_box.currentTextChanged.connect(
             self.set_load_in_4_bit_visibility)
         self.toggle_advanced_settings_form_button.clicked.connect(
@@ -264,6 +279,8 @@ class CaptionSettingsForm(QVBoxLayout):
             self.min_new_token_count_spin_box.setMaximum)
 
         self.show_settings_for_model(self.model_combo_box.currentText())
+        # Ensure the UI rows reflect the initially selected model
+        self.update_visibility_for_model(self.model_combo_box.currentText())
         self.set_load_in_4_bit_visibility(self.device_combo_box.currentText())
         if not self.is_bitsandbytes_available:
             self.load_in_4_bit_check_box.setChecked(False)
@@ -290,35 +307,172 @@ class CaptionSettingsForm(QVBoxLayout):
         return model_directory_paths
 
     @Slot(str)
+    def fetch_openai_models(self):
+        """Fetch available models from OpenAI API endpoint."""
+        from auto_captioning.models_list import get_model_class
+        from auto_captioning.models.openai_model import OpenAIModel
+
+        # Only fetch if OpenAI is selected
+        current_model = self.model_combo_box.currentText()
+        if get_model_class(current_model) != OpenAIModel:
+            return
+
+        api_url = self.remote_address_line_edit.text().strip()
+        api_key = self.api_key_line_edit.text().strip()
+
+        # Don't fetch if no API key
+        if not api_key:
+            self.openai_model_combo_box.clear()
+            self.openai_model_combo_box.addItem('Enter API key to load models')
+            self.openai_model_combo_box.setEnabled(False)
+            return
+
+        # Show loading state
+        self.openai_model_combo_box.clear()
+        self.openai_model_combo_box.addItem('Loading models...')
+        self.openai_model_combo_box.setEnabled(False)
+
+        # Fetch models in a separate thread to avoid blocking UI
+        from PySide6.QtCore import QThread, Signal
+
+        class ModelFetcher(QThread):
+            models_fetched = Signal(list)
+            error_occurred = Signal(str)
+
+            def __init__(self, api_url, api_key):
+                super().__init__()
+                self.api_url = api_url
+                self.api_key = api_key
+
+            def run(self):
+                try:
+                    from openai import OpenAI
+
+                    # Initialize client
+                    if self.api_url:
+                        client = OpenAI(api_key=self.api_key, base_url=self.api_url)
+                    else:
+                        client = OpenAI(api_key=self.api_key)
+
+                    # Fetch models
+                    models = client.models.list()
+
+                    # Filter for vision-capable models
+                    vision_models = []
+                    for model in models.data:
+                        model_id = model.id
+                        # Common vision-capable models
+                        if any(keyword in model_id.lower() for keyword in
+                               ['gpt-4', 'vision', 'gpt-4o', 'gpt-4-turbo']):
+                            vision_models.append(model_id)
+
+                    # If no vision models found, include all models
+                    if not vision_models:
+                        vision_models = [model.id for model in models.data]
+
+                    # Sort models
+                    vision_models.sort()
+
+                    if vision_models:
+                        self.models_fetched.emit(vision_models)
+                    else:
+                        self.error_occurred.emit('No models available')
+
+                except Exception as e:
+                    self.error_occurred.emit(str(e))
+
+        def on_models_fetched(models):
+            self.openai_model_combo_box.clear()
+
+            # Restore previously selected model if it exists
+            previous_model = settings.value('openai_selected_model', defaultValue='')
+
+            for model in models:
+                self.openai_model_combo_box.addItem(model)
+
+            # Try to restore previous selection
+            if previous_model:
+                index = self.openai_model_combo_box.findText(previous_model)
+                if index >= 0:
+                    self.openai_model_combo_box.setCurrentIndex(index)
+
+            self.openai_model_combo_box.setEnabled(True)
+
+            # Clean up thread
+            if hasattr(self, '_model_fetcher'):
+                self._model_fetcher.deleteLater()
+
+        def on_error(error_msg):
+            self.openai_model_combo_box.clear()
+            self.openai_model_combo_box.addItem(f'Error: {error_msg}')
+            self.openai_model_combo_box.setEnabled(False)
+
+            # Clean up thread
+            if hasattr(self, '_model_fetcher'):
+                self._model_fetcher.deleteLater()
+
+        # Create and start fetcher thread
+        self._model_fetcher = ModelFetcher(api_url, api_key)
+        self._model_fetcher.models_fetched.connect(on_models_fetched)
+        self._model_fetcher.error_occurred.connect(on_error)
+        self._model_fetcher.start()
+
     def show_settings_for_model(self, model_id: str):
+        from auto_captioning.models.openai_model import OpenAIModel
+
         wd_tagger_widgets = [self.wd_tagger_settings_form_container]
-        non_wd_tagger_widgets = [
+        device_related_widgets = [
+            self.device_label,
+            self.device_combo_box,
+            self.load_in_4_bit_container
+        ]
+        advanced_settings_widgets = [
+            self.horizontal_line,
+            self.toggle_advanced_settings_form_button,
+            self.advanced_settings_form_container
+        ]
+        basic_captioning_widgets = [
             self.prompt_label,
             self.prompt_text_edit,
             self.skip_hash_container,
             self.caption_start_label,
             self.caption_start_line_edit,
-            self.device_label,
-            self.device_combo_box,
-            self.load_in_4_bit_container,
-            self.remove_tag_separators_container,
-            self.horizontal_line,
-            self.toggle_advanced_settings_form_button,
-            self.advanced_settings_form_container
+            self.remove_tag_separators_container
         ]
-        is_wd_tagger_model = get_model_class(model_id) == WdTagger
+
+        model_class = get_model_class(model_id)
+        is_wd_tagger_model = model_class == WdTagger
+        is_api_model = model_class in [RemoteGen, OpenAIModel]
+
+        # Show/hide WD Tagger specific widgets
         for widget in wd_tagger_widgets:
             widget.setVisible(is_wd_tagger_model)
-            self.remote_address_line_edit.setVisible(False)
-            self.api_key_line_edit.setVisible(False)
-        for widget in non_wd_tagger_widgets:
-            self.remote_address_line_edit.setVisible(False)
-            self.api_key_line_edit.setVisible(False)
+
+        # Show/hide basic captioning widgets (for all non-WD-Tagger models)
+        for widget in basic_captioning_widgets:
             widget.setVisible(not is_wd_tagger_model)
-        if get_model_class(model_id) == RemoteGen:
-            self.remote_address_line_edit.setVisible(True)
-            self.api_key_line_edit.setVisible(True)
-        self.set_load_in_4_bit_visibility(self.device_combo_box.currentText())
+
+        # Show/hide device-related widgets (only for local models)
+        for widget in device_related_widgets:
+            widget.setVisible(not is_wd_tagger_model and not is_api_model)
+
+        # Show/hide advanced settings (only for local models, not for API models)
+        for widget in advanced_settings_widgets:
+            widget.setVisible(not is_wd_tagger_model and not is_api_model)
+
+        # Show/hide API-related widgets
+        is_openai_model = model_class == OpenAIModel
+        self.remote_address_line_edit.setVisible(is_api_model)
+        self.api_key_line_edit.setVisible(is_api_model)
+        self.openai_model_combo_box.setVisible(is_openai_model)
+
+        # Fetch OpenAI models when OpenAI is selected
+        if is_openai_model:
+            self.fetch_openai_models()
+
+        # Set load in 4-bit visibility only for local models
+        if not is_wd_tagger_model and not is_api_model:
+            self.set_load_in_4_bit_visibility(self.device_combo_box.currentText())
 
     @Slot(str)
     def set_load_in_4_bit_visibility(self, device: str):
@@ -330,6 +484,71 @@ class CaptionSettingsForm(QVBoxLayout):
         is_load_in_4_bit_available = (self.is_bitsandbytes_available
                                       and device == CaptionDevice.GPU)
         self.load_in_4_bit_container.setVisible(is_load_in_4_bit_available)
+
+    @Slot(str)
+    def update_visibility_for_model(self, model_id: str):
+        # Determine model type
+        model_class = get_model_class(model_id)
+        try:
+            from auto_captioning.models.remote import RemoteGen
+        except Exception:
+            RemoteGen = None
+        try:
+            from auto_captioning.models.openai_model import OpenAIModel
+        except Exception:
+            OpenAIModel = None
+
+        is_api_model = (RemoteGen is not None and model_class == RemoteGen) or \
+                       (OpenAIModel is not None and model_class == OpenAIModel)
+        is_wd_tagger_model = model_class == WdTagger
+
+        # Helper to hide both label and field by scanning all QFormLayouts
+        from PySide6.QtWidgets import QFormLayout
+        def _set_form_row_visible_for_field(field_widget, visible: bool):
+            label_widget = None
+            try:
+                form_layouts = self.findChildren(QFormLayout)
+                for form in form_layouts:
+                    try:
+                        rows = form.rowCount()
+                    except Exception:
+                        continue
+                    for row in range(rows):
+                        item_field = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+                        field = item_field.widget() if item_field is not None else None
+                        if field is field_widget:
+                            item_label = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                            label_widget = item_label.widget() if item_label is not None else None
+                            break
+                    if label_widget is not None:
+                        break
+            except Exception:
+                pass
+            if label_widget is not None:
+                label_widget.setVisible(visible)
+            field_widget.setVisible(visible)
+
+        # Toggle API-related rows (hide entire lines for local models)
+        _set_form_row_visible_for_field(self.remote_address_line_edit, is_api_model)
+        _set_form_row_visible_for_field(self.api_key_line_edit, is_api_model)
+        _set_form_row_visible_for_field(self.openai_model_combo_box, is_api_model)
+
+        # Toggle WD Tagger specific container
+        self.wd_tagger_settings_form_container.setVisible(is_wd_tagger_model)
+
+        # Toggle device/GPU rows (not relevant for API)
+        self.device_label.setVisible(not is_api_model)
+        self.device_combo_box.setVisible(not is_api_model)
+        _set_form_row_visible_for_field(self.gpu_index_spin_box, not is_api_model)
+
+        # Toggle 4-bit option:
+        # - hidden for API
+        # - hidden for WD tagger
+        # - otherwise depends on device and bitsandbytes availability
+        if is_api_model or is_wd_tagger_model:
+            self.load_in_4_bit_container.setVisible(False)
+        else:
+            self.set_load_in_4_bit_visibility(self.device_combo_box.currentText())
 
     @Slot()
     def toggle_advanced_settings_form(self):
@@ -343,8 +562,20 @@ class CaptionSettingsForm(QVBoxLayout):
                 'Show Advanced Settings')
 
     def get_caption_settings(self) -> dict:
+        from auto_captioning.models.openai_model import OpenAIModel
+
+        selected_model = self.model_combo_box.currentText()
+
+        # If OpenAI is selected, use the specific model from the combo box
+        if get_model_class(selected_model) == OpenAIModel:
+            if self.openai_model_combo_box.isEnabled() and self.openai_model_combo_box.count() > 0:
+                openai_model = self.openai_model_combo_box.currentText()
+                # Save the selected model for next time
+                settings.setValue('openai_selected_model', openai_model)
+                selected_model = openai_model
+
         return {
-            'model_id': self.model_combo_box.currentText(),
+            'model_id': selected_model,
             'api_url': self.remote_address_line_edit.text(),
             'api_key': self.api_key_line_edit.text(),
             'prompt': self.prompt_text_edit.toPlainText(),
@@ -448,6 +679,18 @@ class AutoCaptioner(QDockWidget):
             self.start_cancel_button.setEnabled(False)
             self.start_cancel_button.setText('Canceling Auto-Captioning...')
         else:
+            # Check if OpenAI model is selected and available
+            from auto_captioning.models_list import get_model_class
+            from auto_captioning.models.openai_model import OpenAIModel
+
+            selected_model = self.caption_settings_form.model_combo_box.currentText()
+            if get_model_class(selected_model) == OpenAIModel:
+                if not self.caption_settings_form.openai_model_combo_box.isEnabled():
+                    QMessageBox.warning(
+                        self, 'OpenAI Model Not Available',
+                        'Please wait for models to load or check your API key and endpoint.')
+                    return
+
             # Start captioning.
             self.generate_captions()
 
