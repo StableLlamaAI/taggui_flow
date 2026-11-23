@@ -39,13 +39,19 @@ class AllTagsList(QListView):
         super().__init__()
         self.setModel(proxy_tag_counter_model)
         self.all_tags_editor = all_tags_editor
-        self.setItemDelegate(TextEditItemDelegate(self))
+        self.delegate = TextEditItemDelegate(self)
+        self.setItemDelegate(self.delegate)
         self.setWordWrap(True)
         # `selectionChanged` must be used and not `currentChanged` because
         # `currentChanged` is not emitted when the same tag is deselected and
         # selected again.
         self.selectionModel().selectionChanged.connect(
             self.handle_selection_change)
+
+    def set_highlight_text(self, text: str | None):
+        """Set the text that is highlighted in the displayed tags."""
+        self.delegate.highlight_text = text
+        self.viewport().update()
 
     def mousePressEvent(self, event: QMouseEvent):
         click_action = (self.all_tags_editor.click_action_combo_box
@@ -188,6 +194,10 @@ class AllTagsEditor(QDockWidget):
         filtered_tag_count = self.proxy_tag_counter_model.rowCount()
         self.tag_count_label.setText(f'{filtered_tag_count} / '
                                      f'{total_tag_count} Tags')
+
+    def set_highlight_text(self, text: str | None):
+        """Set the text that is highlighted in the displayed tags."""
+        self.all_tags_list.set_highlight_text(text)
 
     @Slot(str)
     def set_selection_mode(self, click_action: str):

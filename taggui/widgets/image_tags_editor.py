@@ -87,11 +87,17 @@ class ImageTagsList(QListView):
         super().__init__()
         self.image_tag_list_model = image_tag_list_model
         self.setModel(self.image_tag_list_model)
-        self.setItemDelegate(TextEditItemDelegate(self))
+        self.delegate = TextEditItemDelegate(self)
+        self.setItemDelegate(self.delegate)
         self.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setWordWrap(True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+
+    def set_highlight_text(self, text: str | None):
+        """Set the text that is highlighted in the displayed tags."""
+        self.delegate.highlight_text = text
+        self.viewport().update()
 
     def keyPressEvent(self, event: QKeyEvent):
         """
@@ -185,6 +191,10 @@ class ImageTagsEditor(QDockWidget):
         if self.image_tag_list_model.rowCount() == 0:
             return
         self.image_tags_list.select_tag(0)
+
+    def set_highlight_text(self, text: str | None):
+        """Set the text that is highlighted in the displayed tags."""
+        self.image_tags_list.set_highlight_text(text)
 
     def select_last_tag(self):
         tag_count = self.image_tag_list_model.rowCount()

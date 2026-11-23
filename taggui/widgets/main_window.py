@@ -3,10 +3,10 @@ from pathlib import Path
 from PySide6.QtCore import QKeyCombination, QModelIndex, QUrl, Qt, Slot, QTimer
 from PySide6.QtGui import (QAction, QActionGroup, QCloseEvent, QDesktopServices,
                            QIcon, QKeySequence, QShortcut, QMouseEvent)
-from PySide6.QtWidgets import (QApplication, QFileDialog, QMainWindow,
-                               QMessageBox, QStackedWidget, QToolBar,
-                               QVBoxLayout, QWidget, QSizePolicy, QHBoxLayout,
-                               QLabel)
+from PySide6.QtWidgets import (QApplication, QFileDialog, QInputDialog,
+                               QLineEdit, QMainWindow, QMessageBox,
+                               QStackedWidget, QToolBar, QVBoxLayout, QWidget,
+                               QSizePolicy, QHBoxLayout, QLabel)
 
 from transformers import AutoTokenizer
 
@@ -47,6 +47,9 @@ class MainWindow(QMainWindow):
         self.directory_path = None
         self.is_running = True
         app.aboutToQuit.connect(lambda: setattr(self, 'is_running', False))
+        # The text that is highlighted in the displayed tags. It is added to
+        # the image list filter as a clause that the user can modify.
+        self.tag_search_text = ''
         image_list_image_width = settings.value(
             'image_list_image_width',
             defaultValue=DEFAULT_SETTINGS['image_list_image_width'], type=int)
@@ -285,13 +288,11 @@ class MainWindow(QMainWindow):
         self.restore()
         self.image_tags_editor.tag_input_box.setFocus()
 
-
         self._filter_timer = QTimer()
         self._filter_timer.setSingleShot(True)
         self._filter_timer.timeout.connect(self.delayed_filter)
         self._filter_delay = 100
         self._max_delay = 400
-        
 
     def closeEvent(self, event: QCloseEvent):
         """Save the window geometry and state before closing."""
@@ -339,6 +340,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(path.name)
         self.image_list_model.load_directory(path)
         self.image_list.filter_line_edit.clear()
+        self.update_tag_highlighting('')
         self.all_tags_editor.filter_line_edit.clear()
         # Clear the current index first to make sure that the `currentChanged`
         # signal is emitted even if the image at the index is already selected.
@@ -367,12 +369,14 @@ class MainWindow(QMainWindow):
         # Save the filter text and the index of the selected image to restore
         # them after reloading the directory.
         filter_text = self.image_list.filter_line_edit.text()
+        search_text = self.tag_search_text
         select_index_key = ('image_index'
                             if self.proxy_image_list_model.filter is None
                             else 'filtered_image_index')
         select_index = settings.value(select_index_key, type=int) or 0
         self.load_directory(self.directory_path)
         self.image_list.filter_line_edit.setText(filter_text)
+        self.update_tag_highlighting(search_text)
         # If the selected image index is out of bounds due to images being
         # deleted, select the last image.
         if select_index >= self.proxy_image_list_model.rowCount():
@@ -396,6 +400,35 @@ class MainWindow(QMainWindow):
         find_and_replace_dialog = FindAndReplaceDialog(
             parent=self, image_list_model=self.image_list_model)
         find_and_replace_dialog.exec()
+
+    @Slot()
+    def show_tag_search_dialog(self):
+        """Ask for a text to search for within all tags."""
+        search_text, is_accepted = QInputDialog.getText(
+            self, 'Search in Tags',
+            'Text to search for in all tags (it is added to the image '
+            'filter):',
+            QLineEdit.EchoMode.Normal, self.tag_search_text)
+        if not is_accepted:
+            return
+        self.apply_tag_search(search_text)
+
+    @Slot(str)
+    def apply_tag_search(self, search_text: str):
+        """
+        Add the search text to the image filter as a clause that the user can
+        modify and highlight it in all displayed tags.
+        """
+        self.update_tag_highlighting(search_text)
+        self.image_list.filter_line_edit.set_search_clause(search_text)
+
+    @Slot(str)
+    def update_tag_highlighting(self, search_text: str):
+        """Highlight the search text in all displayed tags."""
+        self.tag_search_text = search_text
+        self.image_list.set_highlight_text(search_text)
+        self.image_tags_editor.set_highlight_text(search_text)
+        self.all_tags_editor.set_highlight_text(search_text)
 
     @Slot()
     def show_batch_reorder_tags_dialog(self):
@@ -465,6 +498,10 @@ class MainWindow(QMainWindow):
         self.redo_action.triggered.connect(self.image_list_model.redo)
         self.redo_action.setDisabled(True)
         edit_menu.addAction(self.redo_action)
+        search_tags_action = QAction('Search in Tags...', parent=self)
+        search_tags_action.setShortcut(QKeySequence('Ctrl+F'))
+        search_tags_action.triggered.connect(self.show_tag_search_dialog)
+        edit_menu.addAction(search_tags_action)
         find_and_replace_action = QAction('Find and Replace...', parent=self)
         find_and_replace_action.setShortcut(QKeySequence('Ctrl+R'))
         find_and_replace_action.triggered.connect(
