@@ -2,6 +2,7 @@ import gc
 import re
 from contextlib import nullcontext
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -12,9 +13,11 @@ from transformers import (AutoModelForVision2Seq, AutoProcessor,
                           BatchFeature, BitsAndBytesConfig)
 from transformers.utils.import_utils import is_torch_bf16_gpu_available
 
-import auto_captioning.captioning_thread as captioning_thread
 from utils.enums import CaptionDevice
 from utils.image import Image
+
+if TYPE_CHECKING:
+    from auto_captioning import captioning_thread
 
 
 def replace_template_variable(match: re.Match, image: Image, skip_hash: bool) -> str:

@@ -12,7 +12,7 @@ DEFAULT_SETTINGS = {
     'models_directory_path': '',
     'marking_models_directory_path': '',
     'export_filter': 'All images',
-    'export_preset': 'SDXL, SD3, Flux',
+    'export_preset': 'SDXL, SD3, Flux.1',
     'export_resolution': 1024,
     'export_bucket_res_size': 64,
     'export_latent_size': 8,
@@ -39,6 +39,11 @@ class Settings(QSettings):
 
     def __init__(self):
         super().__init__('taggui', 'taggui')
+        # Migrate settings whose possible values were renamed or removed.
+        if self.value('export_preset', type=str) == 'SDXL, SD3, Flux':
+            self.setValue('export_preset', 'SDXL, SD3, Flux.1')
+        if self.value('model_id', type=str) == 'OpenAI compatible API':
+            self.setValue('model_id', 'Remote')
 
     def setValue(self, key, value):
         super().setValue(key, value)

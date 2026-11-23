@@ -161,3 +161,7 @@ cython_debug/
 
 .vscode/
 test/
+
+# possible leftover files from debugging
+images/**/*.json
+images/**/*.txt

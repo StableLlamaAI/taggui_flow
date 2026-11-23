@@ -3,7 +3,6 @@ from pathlib import Path
 from PySide6.QtCore import QModelIndex, Signal
 
 from auto_captioning.auto_captioning_model import AutoCaptioningModel
-from auto_captioning.models_list import get_model_class
 from models.image_list_model import ImageListModel
 from utils.enums import CaptionPosition
 from utils.image import Image
@@ -51,17 +50,9 @@ class CaptioningThread(ModelThread):
         self.model: AutoCaptioningModel | None = None
 
     def load_model(self):
-        model_id = self.caption_settings['model_id']
-        # Prefer explicit API settings over local model loading
-        if self.caption_settings.get('is_openai', False):
-            from auto_captioning.models.openai_model import OpenAIModel
-            model_class = OpenAIModel
-        elif self.caption_settings.get('api_url', '').strip():
-            # Use the generic remote API model if an API URL is provided
-            from auto_captioning.models.remote import RemoteGen
-            model_class = RemoteGen
-        else:
-            model_class = get_model_class(model_id)
+        # Imported here to avoid a circular import with `models_list`.
+        from auto_captioning.models_list import get_model_class
+        model_class = get_model_class(self.caption_settings['model_id'])
         self.model = model_class(
             captioning_thread_=self, caption_settings=self.caption_settings)
         self.error_message = self.model.get_error_message()
@@ -77,7 +68,7 @@ class CaptioningThread(ModelThread):
         }
 
     def get_model_inputs(self, image: Image):
-        image_prompt =  self.model.get_image_prompt(image)
+        image_prompt = self.model.get_image_prompt(image)
         crop = self.caption_settings['limit_to_crop']
         return image_prompt, self.model.get_model_inputs(image_prompt, image, crop)
 
