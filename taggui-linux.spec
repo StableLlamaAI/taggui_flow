@@ -1,14 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_data_files
 
 datas = [('clip-vit-base-patch32', 'clip-vit-base-patch32'),
          ('images/icon.ico', 'images')]
 datas += [('/usr/include/python3.12', 'include/python3.12')]
-datas += collect_data_files('triton')
-datas += collect_data_files('xformers')
 hiddenimports = [
     'timm.models.layers',
-    'xformers._C',
 ]
 
 block_cipher = None
@@ -28,10 +24,6 @@ a = Analysis(
     win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
-    module_collection_mode={
-        'triton': 'py',
-        'xformers': 'pyz+py',
-    },
 )
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
