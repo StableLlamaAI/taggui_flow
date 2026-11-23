@@ -4,11 +4,12 @@ from pathlib import Path
 import requests
 from PySide6.QtCore import (QModelIndex, QObject, QThread, Qt, QTimer, Signal,
                             Slot)
-from PySide6.QtGui import QFontMetrics, QTextCursor
-from PySide6.QtWidgets import (QAbstractScrollArea, QComboBox, QDockWidget,
-                               QFormLayout, QFrame, QHBoxLayout, QLabel,
-                               QMessageBox, QPlainTextEdit, QProgressBar,
-                               QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtGui import QFontMetrics
+from PySide6.QtWidgets import (QAbstractScrollArea, QCheckBox, QComboBox,
+                               QDockWidget, QFormLayout, QFrame, QHBoxLayout,
+                               QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
+                               QProgressBar, QPushButton, QScrollArea,
+                               QSizePolicy, QVBoxLayout, QWidget)
 
 from auto_captioning.captioning_thread import CaptioningThread
 from auto_captioning.models.remote import RemoteGen
@@ -16,7 +17,7 @@ from auto_captioning.models.wd_tagger import WdTagger
 from auto_captioning.models_list import MODELS, get_model_class
 from dialogs.caption_multiple_images_dialog import CaptionMultipleImagesDialog
 from models.image_list_model import ImageListModel
-from utils.big_widgets import TallPushButton
+from utils.big_widgets import ConsoleTextEdit, TallPushButton
 from utils.enums import CaptionDevice, CaptionPosition
 from utils.settings import DEFAULT_SETTINGS, settings, get_tag_separator
 from utils.settings_widgets import (FocusedScrollSettingsComboBox,
@@ -24,7 +25,7 @@ from utils.settings_widgets import (FocusedScrollSettingsComboBox,
                                     FocusedScrollSettingsSpinBox,
                                     SettingsBigCheckBox, SettingsLineEdit,
                                     SettingsPlainTextEdit)
-from utils.utils import pluralize
+from utils.utils import elide_binary_data, pluralize, truncate_text
 from widgets.image_list import ImageList
 
 
@@ -71,10 +72,15 @@ class ApiModelFetcher(QThread):
             headers: dict[str, str] = {}
             if self.api_key:
                 headers['Authorization'] = f'Bearer {self.api_key}'
-            response = requests.get(models_url, headers=headers, timeout=30)
-            response.raise_for_status()
+            response = requests.get(models_url, headers=headers,
+                                    timeout=(10, 30))
+            if response.status_code >= 400:
+                self.error_occurred.emit(
+                    RemoteGen.get_http_error_message(response))
+                return
+            json_response = response.json()
             model_ids = sorted(
-                item['id'] for item in response.json().get('data', [])
+                item['id'] for item in json_response.get('data', [])
                 if isinstance(item, dict) and item.get('id'))
             # Prefer vision-capable models, but show everything when no known
             # vision model names are returned (e.g. for local endpoints).
@@ -84,8 +90,14 @@ class ApiModelFetcher(QThread):
                 if any(keyword in model_id.lower()
                        for keyword in vision_keywords)]
             self.models_fetched.emit(vision_model_ids or model_ids)
+        except requests.exceptions.Timeout:
+            self.error_occurred.emit('The request timed out.')
+        except requests.exceptions.RequestException as error:
+            self.error_occurred.emit(RemoteGen.get_request_error_message(error))
+        except (ValueError, KeyError, TypeError) as error:
+            self.error_occurred.emit(f'Unexpected response format: {error}')
         except Exception as error:
-            self.error_occurred.emit(str(error))
+            self.error_occurred.emit(elide_binary_data(str(error)))
 
 
 class CaptionSettingsForm(QVBoxLayout):
@@ -102,30 +114,93 @@ class CaptionSettingsForm(QVBoxLayout):
         basic_settings_form.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         self.model_combo_box = FocusedScrollSettingsComboBox(key='model_id')
+        # Use the full width of the dock so that long model identifiers are
+        # readable.
+        self.model_combo_box.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                          QSizePolicy.Policy.Fixed)
         # `setEditable()` must be called before `addItems()` to preserve any
         # custom model that was set.
         self.model_combo_box.setEditable(True)
         self.model_combo_box.addItems(self.get_local_model_paths())
         self.model_combo_box.addItems(MODELS)
 
-        # Only used by API models.
+        # Settings that are only relevant for API models. They are kept in a
+        # separate container so that they can be hidden as a whole.
+        self.api_settings_container = QWidget()
+        api_settings_form = QFormLayout(self.api_settings_container)
+        api_settings_form.setRowWrapPolicy(
+            QFormLayout.RowWrapPolicy.WrapAllRows)
+        api_settings_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+
         self.remote_address_line_edit = SettingsLineEdit(
             key='remote_address', default='')
         self.remote_address_line_edit.setPlaceholderText(
-            'e.g. http://localhost:5000/v1 (empty: official OpenAI endpoint)')
+            'Empty: https://api.openai.com/v1')
+        self.remote_address_line_edit.setClearButtonEnabled(True)
+        self.remote_address_line_edit.setToolTip(
+            'Base URL of the service, e.g. http://localhost:11434/v1.\n'
+            'Leave it empty to use the official OpenAI endpoint.\n'
+            'Separate multiple URLs with ";" to distribute the requests '
+            'between them.')
+
         self.api_key_line_edit = SettingsLineEdit(key='api_key', default='')
+        self.api_key_line_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key_line_edit.setPlaceholderText('Empty for local servers')
+        self.api_key_line_edit.setToolTip(
+            'API key of the service. Local servers often do not need one.')
+        api_key_container = QWidget()
+        api_key_layout = QHBoxLayout(api_key_container)
+        api_key_layout.setContentsMargins(0, 0, 0, 0)
+        api_key_layout.addWidget(self.api_key_line_edit, 1)
+        self.show_api_key_check_box = QCheckBox('Show')
+        self.show_api_key_check_box.setToolTip('Show the API key in plain text')
+        api_key_layout.addWidget(self.show_api_key_check_box)
 
         # The model can be picked from the fetched list or typed manually.
         # It is empty by default so that the `model` field can be omitted.
         self.api_model_combo_box = QComboBox()
         self.api_model_combo_box.setEditable(True)
+        self.api_model_combo_box.setInsertPolicy(
+            QComboBox.InsertPolicy.NoInsert)
         self.api_model_combo_box.setEditText(
             str(settings.value('api_model', defaultValue='', type=str)))
+        self.api_model_combo_box.setToolTip(
+            'Model name to request from the API, e.g. gpt-4o.\n'
+            'Leave it empty to use the default model of the server.')
         api_model_line_edit = self.api_model_combo_box.lineEdit()
         if api_model_line_edit is not None:
             api_model_line_edit.setPlaceholderText(
-                'Model name, e.g. gpt-4o (empty: server default)')
-        self.api_model_combo_box.setVisible(False)
+                'Empty: server default, e.g. gpt-4o')
+        self.api_model_container = QWidget()
+        api_model_layout = QHBoxLayout(self.api_model_container)
+        api_model_layout.setContentsMargins(0, 0, 0, 0)
+        api_model_layout.addWidget(self.api_model_combo_box, 1)
+        self.refresh_api_models_button = QPushButton('Refresh')
+        self.refresh_api_models_button.setToolTip(
+            'Load the list of available models from the API endpoint')
+        api_model_layout.addWidget(self.refresh_api_models_button)
+
+        self.api_max_image_megapixels_spin_box = (
+            FocusedScrollSettingsDoubleSpinBox(
+                key='api_max_image_megapixels', default=1.0, minimum=0,
+                maximum=64))
+        self.api_max_image_megapixels_spin_box.setSingleStep(0.5)
+        self.api_max_image_megapixels_spin_box.setToolTip(
+            'Images are downscaled to this many megapixels before they are '
+            'sent to the API. Larger images cost more tokens and take longer '
+            'to upload; 0 sends the original size.')
+
+        self.api_status_label = QLabel()
+        self.api_status_label.hide()
+
+        api_settings_form.addRow('API endpoint',
+                                 self.remote_address_line_edit)
+        api_settings_form.addRow('API key', api_key_container)
+        api_settings_form.addRow('API model', self.api_model_container)
+        api_settings_form.addRow('Max image size (MP)',
+                                 self.api_max_image_megapixels_spin_box)
+        api_settings_form.addRow(self.api_status_label)
 
         self._api_model_fetcher: ApiModelFetcher | None = None
         self._api_model_fetch_timer = QTimer(self)
@@ -133,8 +208,15 @@ class CaptionSettingsForm(QVBoxLayout):
         self._api_model_fetch_timer.setInterval(500)
         self._api_model_fetch_timer.timeout.connect(self.fetch_api_models)
 
-        self.prompt_text_edit = SettingsPlainTextEdit(key='prompt')
-        set_text_edit_height(self.prompt_text_edit, 4)
+        # The prompt field grows with its content so that long prompts are
+        # fully visible instead of being clipped after a few lines.
+        self.prompt_text_edit = SettingsPlainTextEdit(
+            key='prompt', minimum_line_count=3, maximum_line_count=12)
+        self.prompt_text_edit.setTabChangesFocus(True)
+        self.prompt_text_edit.setToolTip(
+            'Instructions given to the model.\n'
+            'Template variables: {tags}, {name} and {directory} (or '
+            '{folder}).')
         self.caption_start_line_edit = SettingsLineEdit(key='caption_start')
         self.caption_start_line_edit.setClearButtonEnabled(True)
         self.caption_position_combo_box = FocusedScrollSettingsComboBox(
@@ -182,16 +264,16 @@ class CaptionSettingsForm(QVBoxLayout):
         remove_tag_separators_layout.addWidget(
             self.remove_tag_separators_check_box)
         basic_settings_form.addRow('Model', self.model_combo_box)
-        basic_settings_form.addRow('API endpoint',
-                                   self.remote_address_line_edit)
-        basic_settings_form.addRow('API Key', self.api_key_line_edit)
-        basic_settings_form.addRow('API Model', self.api_model_combo_box)
+        basic_settings_form.addRow(self.api_settings_container)
 
         # Fetch the model list (debounced) when the API settings change.
         self.remote_address_line_edit.textChanged.connect(
             self.schedule_api_models_fetch)
         self.api_key_line_edit.textChanged.connect(
             self.schedule_api_models_fetch)
+        self.refresh_api_models_button.clicked.connect(self.fetch_api_models)
+        self.show_api_key_check_box.toggled.connect(
+            self.set_api_key_visibility)
 
         self.prompt_label = QLabel('Prompt')
         basic_settings_form.addRow(self.prompt_label, self.prompt_text_edit)
@@ -227,10 +309,10 @@ class CaptionSettingsForm(QVBoxLayout):
         tags_to_exclude_form.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         self.tags_to_exclude_text_edit = SettingsPlainTextEdit(
-            key='wd_tagger_tags_to_exclude')
+            key='wd_tagger_tags_to_exclude', minimum_line_count=2,
+            maximum_line_count=10)
         tags_to_exclude_form.addRow('Tags to exclude',
                                     self.tags_to_exclude_text_edit)
-        set_text_edit_height(self.tags_to_exclude_text_edit, 4)
         wd_tagger_settings_form.addRow('Show probabilities',
                                        self.show_probabilities_check_box)
         wd_tagger_settings_form.addRow('Minimum probability',
@@ -377,12 +459,15 @@ class CaptionSettingsForm(QVBoxLayout):
         api_key = self.api_key_line_edit.text().strip()
         # Avoid pointless requests for the official endpoint without a key.
         if not api_url and not api_key:
+            self.set_api_status('')
             return
         if (self._api_model_fetcher is not None
                 and self._api_model_fetcher.isRunning()):
             # Try again after the running request has finished.
             self._api_model_fetch_timer.start()
             return
+        self.set_api_status('Loading the available models...')
+        self.refresh_api_models_button.setEnabled(False)
         self._api_model_fetcher = ApiModelFetcher(api_url, api_key, self)
         self._api_model_fetcher.models_fetched.connect(self.set_api_models)
         self._api_model_fetcher.error_occurred.connect(
@@ -393,8 +478,6 @@ class CaptionSettingsForm(QVBoxLayout):
 
     @Slot(list)
     def set_api_models(self, model_ids: list[str]):
-        if not model_ids:
-            return
         current_model = self.api_model_combo_box.currentText()
         self.api_model_combo_box.blockSignals(True)
         self.api_model_combo_box.clear()
@@ -403,17 +486,51 @@ class CaptionSettingsForm(QVBoxLayout):
         # not in the list is kept instead of selecting the first entry.
         self.api_model_combo_box.setEditText(current_model)
         self.api_model_combo_box.blockSignals(False)
+        if model_ids:
+            self.set_api_status(
+                f'Found {len(model_ids)} '
+                f'{pluralize("model", len(model_ids))}.')
+        else:
+            self.set_api_status(
+                'The API did not report any models.', is_error=True,
+                tooltip='The API did not report any models. Enter the model '
+                        'name manually.')
 
     @Slot(str)
     def show_api_models_error(self, error_message: str):
         # Do not block usage just because the model list could not be loaded:
         # the model name can always be typed manually.
+        error_message = truncate_text(elide_binary_data(error_message), 300)
         print(f'Could not load the model list: {error_message}')
-        self.api_model_combo_box.setToolTip(
-            f'Could not load the model list: {error_message}')
+        self.set_api_status(
+            'Could not load the model list.', is_error=True,
+            tooltip=f'Could not load the model list: {error_message}')
+
+    def set_api_status(self, text: str, is_error: bool = False,
+                       tooltip: str | None = None):
+        """Show a short status message in the API settings."""
+        if not text:
+            self.api_status_label.clear()
+            self.api_status_label.setToolTip('')
+            self.api_status_label.hide()
+            return
+        self.api_status_label.setText(text)
+        self.api_status_label.setToolTip(tooltip or text)
+        if is_error:
+            self.api_status_label.setStyleSheet('color: #c0392b;')
+        else:
+            self.api_status_label.setStyleSheet('')
+        self.api_status_label.show()
+
+    @Slot(bool)
+    def set_api_key_visibility(self, is_visible: bool):
+        self.api_key_line_edit.setEchoMode(
+            QLineEdit.EchoMode.Normal if is_visible
+            else QLineEdit.EchoMode.Password)
 
     @Slot()
     def _api_models_fetch_finished(self):
+        self.refresh_api_models_button.setEnabled(True)
         if self._api_model_fetcher is not None:
             self._api_model_fetcher.deleteLater()
             self._api_model_fetcher = None
@@ -446,9 +563,27 @@ class CaptionSettingsForm(QVBoxLayout):
             widget.setVisible(not is_wd_tagger_model)
 
         # API settings.
-        self._set_form_row_visible(self.remote_address_line_edit, is_api_model)
-        self._set_form_row_visible(self.api_key_line_edit, is_api_model)
-        self._set_form_row_visible(self.api_model_combo_box, is_api_model)
+        self.api_settings_container.setVisible(is_api_model)
+
+        # Show the model default prompt as a hint for an empty prompt field.
+        if is_wd_tagger_model:
+            self.prompt_text_edit.setPlaceholderText('')
+        else:
+            # Some models define the default prompt as a class attribute,
+            # others as a static method.
+            default_prompt = getattr(model_class, 'default_prompt', '')
+            if not default_prompt:
+                try:
+                    default_prompt = model_class.get_default_prompt()
+                except TypeError:
+                    default_prompt = ''
+            default_prompt = str(default_prompt or '').strip()
+            if default_prompt:
+                self.prompt_text_edit.setPlaceholderText(
+                    f'Empty: uses the default prompt "{default_prompt}"')
+            else:
+                self.prompt_text_edit.setPlaceholderText(
+                    'Instructions given to the model')
 
         # Device settings are only relevant for local models.
         self.device_label.setVisible(is_local_model)
@@ -523,6 +658,8 @@ class CaptionSettingsForm(QVBoxLayout):
             'api_model': api_model,
             'api_url': self.remote_address_line_edit.text(),
             'api_key': self.api_key_line_edit.text(),
+            'api_max_image_megapixels':
+                self.api_max_image_megapixels_spin_box.value(),
             'prompt': self.prompt_text_edit.toPlainText(),
             'skip_hash': self.skip_hash_check_box.isChecked(),
             'caption_start': self.caption_start_line_edit.text(),
@@ -575,14 +712,12 @@ class AutoCaptioner(QDockWidget):
         self.image_list = image_list
         self.is_captioning = False
         self.captioning_thread = None
+        self.show_alert_when_finished = False
         self.processor = None
         self.model = None
         self.model_id: str | None = None
         self.model_device_type: str | None = None
         self.is_model_loaded_in_4_bit = None
-        # Whether the last block of text in the console text edit should be
-        # replaced with the next block of text that is outputted.
-        self.replace_last_console_text_edit_block = False
 
         # Each `QDockWidget` needs a unique object name for saving its state.
         self.setObjectName('auto_captioner')
@@ -594,9 +729,10 @@ class AutoCaptioner(QDockWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setFormat('%v / %m images captioned (%p%)')
         self.progress_bar.hide()
-        self.console_text_edit = QPlainTextEdit()
-        set_text_edit_height(self.console_text_edit, 4)
-        self.console_text_edit.setReadOnly(True)
+        self.console_text_edit = ConsoleTextEdit()
+        set_text_edit_height(self.console_text_edit, 8)
+        self.console_text_edit.setToolTip(
+            'Captioning output. Image data is replaced by a placeholder.')
         self.console_text_edit.hide()
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -635,56 +771,44 @@ class AutoCaptioner(QDockWidget):
 
     @Slot(str)
     def update_console_text_edit(self, text: str):
-        # '\x1b[A' is the ANSI escape sequence for moving the cursor up.
-        if text == '\x1b[A':
-            self.replace_last_console_text_edit_block = True
-            return
-        text = text.strip()
-        if not text:
-            return
-        if self.console_text_edit.isHidden():
+        if (self.console_text_edit.add_output(text)
+                and self.console_text_edit.isHidden()):
             self.console_text_edit.show()
-        if self.replace_last_console_text_edit_block:
-            self.replace_last_console_text_edit_block = False
-            # Select and remove the last block of text.
-            self.console_text_edit.moveCursor(QTextCursor.MoveOperation.End)
-            self.console_text_edit.moveCursor(
-                QTextCursor.MoveOperation.StartOfBlock,
-                QTextCursor.MoveMode.KeepAnchor)
-            self.console_text_edit.textCursor().removeSelectedText()
-            # Delete the newline.
-            self.console_text_edit.textCursor().deletePreviousChar()
-        self.console_text_edit.appendPlainText(text)
 
     @Slot()
     def show_alert(self):
         if self.captioning_thread.is_canceled:
             return
         if self.captioning_thread.is_error:
-            icon = QMessageBox.Icon.Critical
-            text = ('An error occurred during captioning. See the '
-                    'Auto-Captioner console for more information.')
+            alert = QMessageBox()
+            alert.setIcon(QMessageBox.Icon.Critical)
+            alert.setText('An error occurred during captioning.')
+            alert.setInformativeText(
+                'See the Auto-Captioner console for more information.')
+            error_message = (self.captioning_thread.error_message or '').strip()
+            if error_message:
+                alert.setDetailedText(error_message)
+        elif self.show_alert_when_finished:
+            alert = QMessageBox()
+            alert.setIcon(QMessageBox.Icon.Information)
+            alert.setText('Captioning has finished.')
         else:
-            icon = QMessageBox.Icon.Information
-            text = 'Captioning has finished.'
-        alert = QMessageBox()
-        alert.setIcon(icon)
-        alert.setText(text)
+            return
         alert.exec()
 
     @Slot()
     def generate_captions(self):
         selected_image_indices = self.image_list.get_selected_image_indices()
         selected_image_count = len(selected_image_indices)
-        show_alert_when_finished = False
+        self.show_alert_when_finished = False
         if selected_image_count > 1:
             confirmation_dialog = CaptionMultipleImagesDialog(
                 selected_image_count)
             reply = confirmation_dialog.exec()
             if reply != QMessageBox.StandardButton.Yes:
                 return
-            show_alert_when_finished = (confirmation_dialog
-                                        .show_alert_check_box.isChecked())
+            self.show_alert_when_finished = (
+                confirmation_dialog.show_alert_check_box.isChecked())
         self.set_is_captioning(True)
         caption_settings = self.caption_settings_form.get_caption_settings()
         if caption_settings['caption_position'] != CaptionPosition.DO_NOT_ADD:
@@ -719,8 +843,7 @@ class AutoCaptioner(QDockWidget):
         self.captioning_thread.finished.connect(self.progress_bar.hide)
         self.captioning_thread.finished.connect(
             lambda: self.start_cancel_button.setEnabled(True))
-        if show_alert_when_finished:
-            self.captioning_thread.finished.connect(self.show_alert)
+        self.captioning_thread.finished.connect(self.show_alert)
         # Redirect `stdout` and `stderr` so that the outputs are displayed in
         # the console text edit.
         sys.stdout = self.captioning_thread

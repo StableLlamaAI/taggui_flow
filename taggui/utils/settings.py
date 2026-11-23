@@ -2,7 +2,9 @@ from PySide6.QtCore import QSettings, Signal
 
 # Defaults for settings that are accessed from multiple places.
 DEFAULT_SETTINGS = {
-    'font_size': 16,
+    # Font scale in percent relative to the system default font (100 = no
+    # change).
+    'font_scale_percent': 100,
     # Common image formats that are supported in PySide6, as well as JPEG XL.
     'image_list_file_formats': 'bmp, gif, jpg, jpeg, jxl, png, tif, tiff, webp',
     'image_list_image_width': 200,
@@ -64,3 +66,16 @@ def get_tag_separator() -> str:
     if insert_space_after_tag_separator:
         tag_separator += ' '
     return tag_separator
+
+
+def migrate_font_size_setting(system_point_size: float):
+    """Convert the old absolute font size setting to a relative scale."""
+    if not settings.contains('font_size'):
+        return
+    font_size = settings.value('font_size', type=int)
+    if (font_size and system_point_size > 0
+            and not settings.contains('font_scale_percent')):
+        scale_percent = round(100 * font_size / system_point_size)
+        settings.setValue('font_scale_percent',
+                          max(50, min(300, scale_percent)))
+    settings.remove('font_size')

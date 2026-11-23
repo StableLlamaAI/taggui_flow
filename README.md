@@ -83,11 +83,21 @@ Select the `Remote` captioning model and set the following options:
   `https://api.openai.com/v1` or `http://localhost:11434/v1` for a local
   server. Leave it empty to use the official OpenAI endpoint. To distribute
   the requests between multiple servers, separate their URLs with `;`.
-- `API Key`: The API key for the service. Local servers often do not require
-  one.
-- `API Model`: The model to use. The available models are loaded automatically
-  after entering the endpoint and API key, but the model name can also be
-  typed manually. Leave it empty to omit the `model` field from the request.
+  If a request fails, the next endpoint is tried as a fallback.
+- `API key`: The API key for the service. Local servers often do not require
+  one. The key is hidden by default; enable `Show` to display it.
+- `API model`: The model to use. The available models are loaded automatically
+  after entering the endpoint and API key, and `Refresh` reloads the list.
+  The model name can also be typed manually. Leave it empty to omit the
+  `model` field from the request.
+- `Max image size (MP)`: Images are downscaled to this many megapixels before
+  they are sent to the service. Smaller images upload faster and use fewer
+  tokens; `0` sends the original size.
+
+Images are sent as JPEG, or as PNG when they contain transparency.
+The requests, responses and any errors are shown in the Auto-Captioner
+console, which wraps long lines and replaces embedded image data with
+`[image data]`.
 
 Only the generation parameters supported by the chat completions API
 (`Maximum tokens`, `Temperature` and `Top-p`) are used for API models.
@@ -97,6 +107,10 @@ The other advanced parameters are hidden.
 
 `Prompt`: Instructions given to the captioning model.
 Prompt formats are handled automatically based on the selected model.
+The field grows with its content, so long prompts are fully visible while
+you edit them.
+When the field is empty, the placeholder shows the default prompt of the
+selected model.
 You can use the following template variables to dynamically insert information
 about each image into the prompt:
 
