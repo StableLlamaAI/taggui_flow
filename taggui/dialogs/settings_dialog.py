@@ -16,8 +16,8 @@ class SettingsDialog(QDialog):
         layout.setSpacing(20)
 
         grid_layout = QGridLayout()
-        grid_layout.addWidget(QLabel('Font size (pt)'), 0, 0,
-                              Qt.AlignmentFlag.AlignRight)
+        grid_layout.addWidget(QLabel('Font size relative to system default (%)'),
+                              0, 0, Qt.AlignmentFlag.AlignRight)
         grid_layout.addWidget(QLabel('File types to show in image list'), 1, 0,
                               Qt.AlignmentFlag.AlignRight)
         grid_layout.addWidget(QLabel('Image width in image list (px)'), 2, 0,
@@ -33,10 +33,12 @@ class SettingsDialog(QDialog):
         grid_layout.addWidget(QLabel('Auto-marking models directory'), 8, 0,
                               Qt.AlignmentFlag.AlignRight)
 
-        font_size_spin_box = SettingsSpinBox(
-            key='font_size',
-            minimum=1, maximum=99)
-        font_size_spin_box.valueChanged.connect(self.show_restart_warning)
+        font_scale_spin_box = SettingsSpinBox(
+            key='font_scale_percent',
+            minimum=50, maximum=300)
+        font_scale_spin_box.setSuffix('%')
+        font_scale_spin_box.setSingleStep(5)
+        font_scale_spin_box.valueChanged.connect(self.show_restart_warning)
         file_types_line_edit = SettingsLineEdit(
             key='image_list_file_formats')
         file_types_line_edit.setMinimumWidth(400)
@@ -86,7 +88,7 @@ class SettingsDialog(QDialog):
         marking_models_directory_button.clicked.connect(
             self.set_marking_models_directory_path)
 
-        grid_layout.addWidget(font_size_spin_box, 0, 1,
+        grid_layout.addWidget(font_scale_spin_box, 0, 1,
                               Qt.AlignmentFlag.AlignLeft)
         grid_layout.addWidget(file_types_line_edit, 1, 1,
                               Qt.AlignmentFlag.AlignLeft)

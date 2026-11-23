@@ -9,6 +9,7 @@ from PySide6.QtGui import QImageReader
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from utils.settings import settings
+from utils.system_font import configure_font
 from widgets.main_window import MainWindow
 
 
@@ -37,6 +38,9 @@ def run_gui():
     # The application display name is shown in the title bar.
     app.setApplicationDisplayName('TagGUI')
     app.setStyle('Fusion')
+    # The font must be set before creating any widget so that all widgets
+    # inherit it.
+    configure_font(app)
     # Disable the allocation limit to allow loading large images.
     QImageReader.setAllocationLimit(0)
     main_window = MainWindow(app)

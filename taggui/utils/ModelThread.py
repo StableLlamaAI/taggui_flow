@@ -83,6 +83,10 @@ class ModelThread(QThread):
                 self.clear_console_text_edit_requested.emit()
             print(f'{image.path.name} ({perf_counter() - start_time:.1f} s):\n'
                   f'{console_output_caption}')
+            if self.is_error:
+                # A model may flag an unrecoverable error (e.g. a failed API
+                # request) that makes it pointless to continue.
+                return
         if are_multiple_images_selected:
             generating_end_datetime = datetime.now()
             total_generating_duration = ((generating_end_datetime

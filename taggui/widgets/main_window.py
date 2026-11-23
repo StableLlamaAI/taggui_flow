@@ -2,7 +2,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QKeyCombination, QModelIndex, QUrl, Qt, Slot, QTimer
 from PySide6.QtGui import (QAction, QActionGroup, QCloseEvent, QDesktopServices,
-                           QIcon, QKeySequence, QShortcut, QMouseEvent)
+                           QFontMetrics, QIcon, QKeySequence, QShortcut,
+                           QMouseEvent)
 from PySide6.QtWidgets import (QApplication, QFileDialog, QInputDialog,
                                QLineEdit, QMainWindow, QMessageBox,
                                QStackedWidget, QToolBar, QVBoxLayout, QWidget,
@@ -68,9 +69,6 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(taggui_icon())
         # Not setting this results in some ugly colors.
         self.setPalette(self.app.style().standardPalette())
-        # The font size must be set before creating the widgets to ensure that
-        # everything has the correct font size.
-        self.set_font_size()
         self.image_viewer = ImageViewer(self.proxy_image_list_model)
         self.create_central_widget()
 
@@ -152,7 +150,11 @@ class MainWindow(QMainWindow):
             star_label = QLabel('☆', self)
             star_label.setEnabled(False)
             star_label.setAlignment(Qt.AlignCenter)
-            star_label.setStyleSheet('QLabel { font-size: 22px; }')
+            # Scale the stars with the UI font so that they follow the system
+            # font size, the font scale setting and the pixel density.
+            star_font = star_label.font()
+            star_font.setPixelSize(QFontMetrics(star_font).height())
+            star_label.setFont(star_font)
             star_label.setToolTip(f'Ctrl+{i}')
             star_label.mousePressEvent = lambda event, rating=i: (
                 self.set_rating(rating/5.0, True, event))
@@ -299,13 +301,6 @@ class MainWindow(QMainWindow):
         settings.setValue('geometry', self.saveGeometry())
         settings.setValue('window_state', self.saveState())
         super().closeEvent(event)
-
-    def set_font_size(self):
-        font = self.app.font()
-        font_size = settings.value(
-            'font_size', defaultValue=DEFAULT_SETTINGS['font_size'], type=int)
-        font.setPointSize(font_size)
-        self.app.setFont(font)
 
     def create_central_widget(self):
         central_widget = QStackedWidget()

@@ -2,9 +2,8 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Signal, QModelIndex, Qt, Slot
-from PySide6.QtGui import QTextCursor
-from PySide6.QtWidgets import (QDockWidget, QProgressBar, QPlainTextEdit,
-                               QWidget, QVBoxLayout, QScrollArea,
+from PySide6.QtWidgets import (QDockWidget, QProgressBar, QWidget,
+                               QVBoxLayout, QScrollArea,
                                QAbstractScrollArea, QFrame, QFormLayout,
                                QMessageBox, QTableWidget, QHeaderView,
                                QTableWidgetItem, QComboBox)
@@ -12,7 +11,7 @@ from PySide6.QtWidgets import (QDockWidget, QProgressBar, QPlainTextEdit,
 from utils.icons import create_add_box_icon
 from models.image_list_model import ImageListModel
 from utils.utils import pluralize
-from utils.big_widgets import TallPushButton
+from utils.big_widgets import ConsoleTextEdit, TallPushButton
 from utils.settings import settings, DEFAULT_SETTINGS
 from utils.settings_widgets import (FocusedScrollSettingsComboBox,
                                     FocusedScrollSettingsDoubleSpinBox,
@@ -143,9 +142,6 @@ class AutoMarkings(QDockWidget):
         self.is_marking = False
         self.marking_thread = None
         self.show_alert_when_finished = False
-        # Whether the last block of text in the console text edit should be
-        # replaced with the next block of text that is outputted.
-        self.replace_last_console_text_edit_block = False
         # Each `QDockWidget` needs a unique object name for saving its state.
         self.setObjectName('auto_markings')
         self.setWindowTitle('Auto-Markings')
@@ -157,9 +153,8 @@ class AutoMarkings(QDockWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setFormat('%v / %m images marked (%p%)')
         self.progress_bar.hide()
-        self.console_text_edit = QPlainTextEdit()
-        set_text_edit_height(self.console_text_edit, 4)
-        self.console_text_edit.setReadOnly(True)
+        self.console_text_edit = ConsoleTextEdit()
+        set_text_edit_height(self.console_text_edit, 6)
         self.console_text_edit.hide()
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -200,26 +195,9 @@ class AutoMarkings(QDockWidget):
 
     @Slot(str)
     def update_console_text_edit(self, text: str):
-        # '\x1b[A' is the ANSI escape sequence for moving the cursor up.
-        if text == '\x1b[A':
-            self.replace_last_console_text_edit_block = True
-            return
-        text = text.strip()
-        if not text:
-            return
-        if self.console_text_edit.isHidden():
-            self.console_text_edit.show()
-        if self.replace_last_console_text_edit_block:
-            self.replace_last_console_text_edit_block = False
-            # Select and remove the last block of text.
-            self.console_text_edit.moveCursor(QTextCursor.MoveOperation.End)
-            self.console_text_edit.moveCursor(
-                QTextCursor.MoveOperation.StartOfBlock,
-                QTextCursor.MoveMode.KeepAnchor)
-            self.console_text_edit.textCursor().removeSelectedText()
-            # Delete the newline.
-            self.console_text_edit.textCursor().deletePreviousChar()
-        self.console_text_edit.appendPlainText(text)
+        if self.console_text_edit.add_output(text):
+            if self.console_text_edit.isHidden():
+                self.console_text_edit.show()
 
     @Slot()
     def show_alert(self):

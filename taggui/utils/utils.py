@@ -1,7 +1,29 @@
+import re
 import sys
 from pathlib import Path
 
 from PySide6.QtWidgets import QMessageBox
+
+# Image data that some APIs echo back in their responses (or that ends up in
+# error messages) is huge and useless inside the GUI, so it is replaced by a
+# short placeholder before any text is displayed.
+_DATA_URI_PATTERN = re.compile(
+    r'data:[^\s,;]{0,100};base64,[A-Za-z0-9+/=\s]{100,}')
+_BASE64_PATTERN = re.compile(r'(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{200,}={0,2}')
+
+
+def elide_binary_data(text: str, replacement: str = '[image data]') -> str:
+    """Replace base64-encoded image data in a text with a short placeholder."""
+    text = _DATA_URI_PATTERN.sub(replacement, text)
+    return _BASE64_PATTERN.sub(replacement, text)
+
+
+def truncate_text(text: str, maximum_length: int,
+                  ellipsis: str = '...') -> str:
+    """Shorten a text to at most `maximum_length` characters."""
+    if len(text) <= maximum_length:
+        return text
+    return text[:maximum_length - len(ellipsis)].rstrip() + ellipsis
 
 
 def get_resource_path(unbundled_resource_path: Path) -> Path:
