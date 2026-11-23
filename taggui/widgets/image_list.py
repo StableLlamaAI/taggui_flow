@@ -1,3 +1,4 @@
+import re
 import shutil
 from enum import Enum
 from functools import reduce
@@ -11,7 +12,8 @@ from PySide6.QtGui import QDesktopServices, QColor, QPixmap, QPainter, QDrag
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDockWidget,
                                QFileDialog, QHBoxLayout, QLabel, QLineEdit,
                                QListView, QMenu, QMessageBox, QVBoxLayout,
-                               QWidget, QStyledItemDelegate)
+                               QWidget, QStyledItemDelegate, QStyle,
+                               QStyleOptionViewItem)
 from pyparsing import (CaselessKeyword, CaselessLiteral, Group, OpAssoc,
                        ParseException, QuotedString, Suppress, Word,
                        infix_notation, nums, one_of, printables)
@@ -20,6 +22,8 @@ from models.proxy_image_list_model import ProxyImageListModel
 from utils.image import Image
 from utils.settings import settings
 from utils.settings_widgets import SettingsComboBox
+from utils.text_highlight import (draw_highlighted_text,
+                                  get_style_and_widget, get_text_color)
 from utils.utils import get_confirmation_dialog_reply, pluralize
 from utils.grid import Grid
 
@@ -40,6 +44,10 @@ def replace_filter_wildcards(filter_: str | list) -> str | list:
 
 
 class FilterLineEdit(QLineEdit):
+    # Matches a `search:"text"` clause in the filter text.
+    search_clause_pattern = (r'search\s*:\s*(?:"(?:[^"\\]|\\.)*"'
+                             r"|'(?:[^'\\]|\\.)*'|[^\s()]+)")
+
     def __init__(self):
         super().__init__()
         self.setPlaceholderText('Filter Images')
@@ -49,8 +57,8 @@ class FilterLineEdit(QLineEdit):
                                     | QuotedString(quote_char="'",
                                                    esc_char='\\')
                                     | Word(printables, exclude_chars='()'))
-        string_filter_keys = ['tag', 'caption', 'marking', 'crops', 'visible',
-                              'name', 'path', 'size', 'target']
+        string_filter_keys = ['tag', 'caption', 'search', 'marking', 'crops',
+                              'visible', 'name', 'path', 'size', 'target']
         string_filter_expressions = [Group(CaselessLiteral(key) + Suppress(':')
                                            + optionally_quoted_string)
                                      for key in string_filter_keys]
@@ -71,6 +79,44 @@ class FilterLineEdit(QLineEdit):
             [(CaselessKeyword('NOT'), 1, OpAssoc.RIGHT),
              (CaselessKeyword('AND'), 2, OpAssoc.LEFT),
              (CaselessKeyword('OR'), 2, OpAssoc.LEFT)])
+
+    def set_search_clause(self, search_text: str):
+        """
+        Insert the text to search for into the filter text so that it is part
+        of the image filter and can be modified by the user.
+        """
+        filter_text = self.remove_search_clauses(self.text())
+        if search_text:
+            escaped_text = (search_text.replace('\\', '\\\\')
+                            .replace('"', r'\"'))
+            search_clause = f'search:"{escaped_text}"'
+            if filter_text:
+                filter_text = f'{filter_text} AND {search_clause}'
+            else:
+                filter_text = search_clause
+        self.setText(filter_text)
+
+    @classmethod
+    def remove_search_clauses(cls, filter_text: str) -> str:
+        """Remove all clauses for searching within the tags."""
+        clause_pattern = cls.search_clause_pattern
+        while True:
+            # Remove the clause together with an adjacent operator so that
+            # the rest of the filter text stays valid.
+            new_filter_text = re.sub(r'\s+(?:AND|OR)\s+' + clause_pattern,
+                                     '', filter_text, count=1,
+                                     flags=re.IGNORECASE)
+            if new_filter_text == filter_text:
+                new_filter_text = re.sub(clause_pattern + r'\s+(?:AND|OR)\s+',
+                                         '', filter_text, count=1,
+                                         flags=re.IGNORECASE)
+            if new_filter_text == filter_text:
+                new_filter_text = re.sub(clause_pattern, '', filter_text,
+                                         count=1, flags=re.IGNORECASE)
+            if new_filter_text == filter_text:
+                break
+            filter_text = new_filter_text
+        return filter_text.strip()
 
     def parse_filter_text(self) -> list | str | None:
         filter_text = self.text()
@@ -103,18 +149,57 @@ class ImageDelegate(QStyledItemDelegate):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.labels = {}
+        # The text that is highlighted in the displayed tags, if any.
+        self.highlight_text = None
 
     def sizeHint(self, option, index):
         return index.data(Qt.ItemDataRole.SizeHintRole)
 
     def paint(self, painter, option, index):
-        super().paint(painter, option, index)
+        if self.highlight_text:
+            self.paint_highlighted(painter, option, index)
+        else:
+            super().paint(painter, option, index)
         p_index = QPersistentModelIndex(index)
         if p_index in self.labels:
             label_text = self.labels[p_index]
             painter.setBrush(QColor(255, 255, 255, 163))
             painter.drawRect(option.rect)
             painter.drawText(option.rect, label_text, Qt.AlignCenter)
+
+    def paint_highlighted(self, painter, option, index):
+        """
+        Paint the item like the default delegate, but highlight the search
+        text in the caption.
+        """
+        style, widget = get_style_and_widget(option)
+        highlighted_option = QStyleOptionViewItem(option)
+        self.initStyleOption(highlighted_option, index)
+        text = highlighted_option.text
+        # Draw the background, the selection and the thumbnail without the
+        # text, and then draw the text separately.
+        highlighted_option.text = ''
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem,
+                          highlighted_option, painter, widget)
+        if not text:
+            return
+        text_rect = style.subElementRect(
+            QStyle.SubElement.SE_ItemViewItemText, highlighted_option, widget)
+        text_margin = (style.pixelMetric(
+            QStyle.PixelMetric.PM_FocusFrameHMargin, highlighted_option,
+            widget) + 1)
+        # The file name is not a tag, so do not highlight matches in it.
+        first_newline_index = text.find('\n')
+        if first_newline_index < 0:
+            # Qt style options use the unicode line separator instead of `\n`.
+            first_newline_index = text.find('\u2028')
+        first_highlight_line = 1 if first_newline_index >= 0 else 0
+        draw_highlighted_text(
+            painter, text_rect, text, self.highlight_text,
+            highlighted_option.font, get_text_color(highlighted_option),
+            text_margin, alignment=highlighted_option.displayAlignment,
+            elide_mode=highlighted_option.textElideMode,
+            first_highlight_line=first_highlight_line)
 
     def update_label(self, index: QModelIndex, label: str):
         p_index = QPersistentModelIndex(index)
@@ -270,6 +355,11 @@ class ImageListView(QListView):
         selected_images = [index.data(Qt.ItemDataRole.UserRole)
                            for index in selected_image_proxy_indices]
         return selected_images
+
+    def set_highlight_text(self, text: str | None):
+        """Set the text that is highlighted in the displayed tags."""
+        self.delegate.highlight_text = text
+        self.viewport().update()
 
     @Slot()
     def copy_selected_image_tags(self):
@@ -458,6 +548,10 @@ class ImageList(QDockWidget):
         elif selection_mode == SelectionMode.TOGGLE:
             self.list_view.setSelectionMode(
                 QAbstractItemView.SelectionMode.MultiSelection)
+
+    def set_highlight_text(self, text: str | None):
+        """Set the text that is highlighted in the displayed tags."""
+        self.list_view.set_highlight_text(text)
 
     @Slot()
     def update_image_index_label(self, proxy_image_index: QModelIndex):

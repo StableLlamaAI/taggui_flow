@@ -56,6 +56,11 @@ class ProxyImageListModel(QSortFilterProxyModel):
             if filter_[0] == 'caption':
                 caption = self.tag_separator.join(image.tags)
                 return fnmatchcase(caption, f'*{filter_[1]}*')
+            if filter_[0] == 'search':
+                # A case-insensitive text search within all tags that is
+                # appended to the image list filter with an AND.
+                caption = self.tag_separator.join(image.tags)
+                return filter_[1].casefold() in caption.casefold()
             if filter_[0] == 'marking':
                 last_colon_index = filter_[1].rfind(':')
                 if last_colon_index < 0:
